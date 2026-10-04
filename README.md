@@ -25,10 +25,47 @@ python wsgi.py          # http://localhost:8000
 ### 运行测试
 
 核心算法（`app/correlator.py`）不依赖 Flask，可直接运行回归测试
-（含“全零参数下单层对单层只计 2 个并列解”的反例与多标志层分段组合用例）：
+（含“全零参数下单层对单层只计 2 个并列解”与“低开间隙惩罚 `gap_open=0`、
+`gap_extend=1` 下 2×2 应得 6 个归属、不漏全部未匹配”的反例，以及多标志层
+分段锚点组合用例）：
 
 ```bash
 python3 -m unittest discover -s tests -v
+```
+
+### 复现“低开间隙惩罚漏解”反例
+
+`PUT /api/settings` 允许任意**非负** `gap_open` / `gap_extend` 组合，包括
+`gap_open < gap_extend`（如 0 / 1）。当五项相似度权重全为 0、两口孔各有两层
+时，“全部未匹配”归属可让两侧跳步交错、每步都重开免费间隙（分值 0）；若把
+“先跳完一侧再跳另一侧”的顺序写进计分 DP，就要承担续间隙惩罚，导致该归属被
+漏判。下面用可执行调用复现修复后应得到 **6 个不同归属**（全部未匹配只计、
+只列一次）：
+
+```bash
+docker compose up -d --build
+BASE=http://localhost:8000
+
+# 两口各两层、属性完全相同的孔
+curl -s -XPOST $BASE/api/boreholes -H 'Content-Type: application/json' -d '{
+  "name":"R","collar_elev":100,"x":0,"layers":[
+    {"top":0,"bottom":2,"lithology":"砂岩","grain":"中粒","water":"稍湿","confidence":0.9},
+    {"top":2,"bottom":4,"lithology":"砂岩","grain":"中粒","water":"稍湿","confidence":0.9}]}' >/dev/null
+curl -s -XPOST $BASE/api/boreholes -H 'Content-Type: application/json' -d '{
+  "name":"H","collar_elev":100,"x":10,"layers":[
+    {"top":0,"bottom":2,"lithology":"砂岩","grain":"中粒","water":"稍湿","confidence":0.9},
+    {"top":2,"bottom":4,"lithology":"砂岩","grain":"中粒","water":"稍湿","confidence":0.9}]}' >/dev/null
+
+# 五项权重全 0、低开间隙 / 高续间隙
+curl -s -XPUT $BASE/api/settings -H 'Content-Type: application/json' -d '{
+  "weights":{"lithology":0,"grain":0,"water":0,"elev":0,"confidence":0},
+  "gap_open":0,"gap_extend":1}' >/dev/null
+
+RID=$(curl -s $BASE/api/state | python3 -c 'import sys,json;print(next(b["id"] for b in json.load(sys.stdin)["boreholes"] if b["name"]=="R"))')
+curl -s -XPOST $BASE/api/correlate -H 'Content-Type: application/json' \
+  -d "{\"reference_id\":$RID,\"marker_ids\":[]}" \
+| python3 -c 'import sys,json;h=json.load(sys.stdin)["holes"][0];print("solution_count =",h["solution_count"]);[print(s["pairs"],"unref",s["unmatched_ref"],"unhole",s["unmatched_hole"]) for s in h["tie_solutions"]]'
+# 期望：solution_count = 6，含一个 pairs=[]、unref=[1,2]、unhole=[1,2] 的“全部未匹配”归属
 ```
 
 ## 功能
@@ -49,9 +86,12 @@ python3 -m unittest discover -s tests -v
   - 列出存在并列最优的层位及其全部候选（含“可未匹配”结局）；
   - 给出候选的**高程歧义区间**（最低–最高高程、跨度），剖面图以紫色虚线候选连线和歧义带显示；
   - 并列解按“**匹配对集合 + 两侧未匹配层集合**”的等价关系计数：同一归属方案不会因
-    间隙操作先后顺序（先跳过参考层还是先跳过待校核层）被重复计数——段内 DP 只走规范形
-    路径（同一间隙段内参考侧间隙在待校核侧间隙之前），多标志层分段组合按同一签名去重，
-    `solution_count` 与 `solutions_listed` 口径一致；
+    间隙操作先后顺序（先跳过参考层还是先跳过待校核层）被重复计数，也不会因某种排列
+    多付续间隙惩罚而漏判——最优分值由不受限 Gotoh DP（允许两侧间隙游程交错）计算，
+    每个归属以其**可达最高 DP 分**参与比较；计数与枚举在“匹配节点 + 间隙区”上按归属
+    进行，每个归属唯一对应一条规范步骤，多标志层分段组合再按同一签名兜底去重，
+    `solution_count` 与 `solutions_listed` 口径一致（支持 `gap_open < gap_extend` 等
+    接口允许的全部非负惩罚组合）；
   - 并列解计数封顶 9999，并列方案枚举最多列出前 100 条，可在结果区弹窗逐方案查看。
 - **剖面图**：SVG 绘制统一高程的钻孔柱状，连线颜色区分普通匹配 / 标志层锚点 / 歧义候选，
   未匹配层标红叉，悬停层块查看属性，可开关歧义带与相似度标注。

@@ -144,5 +144,119 @@ class DefaultParamsRegressionTest(unittest.TestCase):
         self.assertAlmostEqual(res["total_score"], 99.0)
 
 
+class LowOpenPenaltyMissingAssignmentTest(unittest.TestCase):
+    """gap_open < gap_extend 时，归属按其可达最高 DP 分参与比较。
+
+    触发例：五项权重全为 0、两孔各两层、gap_open=0、gap_extend=1。
+    “全部未匹配”归属交错跳过两侧层段时每步都重开免费间隙（分值 0），
+    而固定先跳完一侧再跳另一侧要付续间隙惩罚（-2）。旧的计分 DP 强制
+    后者规范形，导致只返回 5 个归属、漏掉“全部未匹配”。
+    """
+
+    EXPECTED_SIX = {
+        (((101, 201), (102, 202)), (), ()),
+        (((101, 201),), (102,), (202,)),
+        (((102, 202),), (101,), (201,)),
+        (((101, 202),), (102,), (201,)),
+        (((102, 201),), (101,), (202,)),
+        ((), (101, 102), (201, 202)),       # 全部未匹配：曾被漏解
+    }
+
+    def test_2x2_open0_extend1_returns_six_assignments(self):
+        ref = make_layers([(101, "砂岩"), (102, "砂岩")])
+        hole = make_layers([(201, "砂岩"), (202, "砂岩")])
+        res = correlate(ref, hole, [], ZERO_WEIGHTS, 5.0, 0.0, 1.0)
+        self.assertEqual(res["solution_count"], 6)
+        self.assertEqual(res["solutions_listed"], 6)
+        self.assertEqual(len(res["tie_solutions"]), 6)
+        self.assertEqual(signatures(res), self.EXPECTED_SIX)
+        # 全部未匹配只计、只列一次
+        all_gap = [s for s in res["tie_solutions"]
+                   if not s["pairs"]
+                   and sorted(s["unmatched_ref"]) == [101, 102]
+                   and sorted(s["unmatched_hole"]) == [201, 202]]
+        self.assertEqual(len(all_gap), 1)
+        # 六个归属最优分值同为 0
+        self.assertEqual({s["score"] for s in res["tie_solutions"]}, {0.0})
+        self.assertEqual(res["dp_score"], 0.0)
+        # 正反向判定：两层各自的歧义区间均含 3 个结局（2 个候选 + 未匹配）
+        self.assertEqual(len(res["ambiguities"]), 2)
+        for amb in res["ambiguities"]:
+            self.assertTrue(amb["can_be_unmatched"])
+            self.assertEqual(amb["outcome_count"], 3)
+            self.assertEqual(len(amb["partners"]), 2)
+        # 主解仍为对角双匹配（匹配优先），未匹配列表为空
+        self.assertEqual([(p["ref_layer_id"], p["hole_layer_id"])
+                          for p in res["pairs"]], [(101, 201), (102, 202)])
+        self.assertEqual(res["unmatched_ref"], [])
+        self.assertEqual(res["unmatched_hole"], [])
+
+    def test_open0_extend1_single_layer_still_two(self):
+        """1x1、open=0/extend=1：匹配 0 分；未匹配开 1 个免费间隙也 0 分 -> 2。"""
+        ref = make_layers([(101, "砂岩")])
+        hole = make_layers([(201, "砂岩")])
+        res = correlate(ref, hole, [], ZERO_WEIGHTS, 5.0, 0.0, 1.0)
+        self.assertEqual(res["solution_count"], 2)
+        self.assertEqual(signatures(res), {
+            (((101, 201),), (), ()),
+            ((), (101,), (201,)),
+        })
+
+    def test_3x2_open0_extend1_all_unmatched_optimal(self):
+        """3 层对 2 层、open=0/extend=1：全部未匹配交错 4 游程分值 0。"""
+        ref = make_layers([(101, "砂岩"), (102, "砂岩"), (103, "砂岩")])
+        hole = make_layers([(201, "砂岩"), (202, "砂岩")])
+        res = correlate(ref, hole, [], ZERO_WEIGHTS, 5.0, 0.0, 1.0)
+        # 全部匹配不可能（3!=2 单调），但任一含 0 分相似度匹配的归属
+        # 剩余层可交错开免费间隙，最优总分仍为 0
+        self.assertEqual(res["dp_score"], 0.0)
+        sig = signatures(res)
+        self.assertIn(((), (101, 102, 103), (201, 202)), sig)
+        # 计数与列出一致、无重复签名
+        self.assertEqual(res["solution_count"], res["solutions_listed"])
+        self.assertEqual(len(sig), res["solutions_listed"])
+
+    def test_anchor_segments_open0_extend1(self):
+        """锁定标志层分段：3 层对 3 层、中层锁定 -> 两段 1x1 -> 4 个归属。
+
+        每个 1x1 段“匹配/未匹配”在 open=0/extend=1 下同为 0 分；锚点强制
+        出现在每个方案中，全部未匹配（指两个非锚点层均未匹配）恰好一个。
+        """
+        ref = make_layers([(101, "砂岩"), (102, "煤层"), (103, "砂岩")])
+        hole = make_layers([(201, "砂岩"), (202, "煤层"), (203, "砂岩")])
+        res = correlate(ref, hole, [(1, 1)], ZERO_WEIGHTS, 5.0, 0.0, 1.0)
+        self.assertEqual(res["solution_count"], 4)
+        self.assertEqual(res["solutions_listed"], 4)
+        self.assertEqual(signatures(res), {
+            (((101, 201), (102, 202), (103, 203)), (), ()),
+            (((101, 201), (102, 202)), (103,), (203,)),
+            (((102, 202), (103, 203)), (101,), (201,)),
+            (((102, 202),), (101, 103), (201, 203)),
+        })
+        for sol in res["tie_solutions"]:
+            self.assertIn((102, 202), sol["pairs"])
+        for amb in res["ambiguities"]:
+            self.assertTrue(amb["can_be_unmatched"])
+            self.assertEqual(amb["outcome_count"], 2)
+
+    def test_open_ge_extend_unchanged_behavior(self):
+        """正惩罚下匹配严格占优；全零惩罚退化时 6 个归属并列。"""
+        ref = make_layers([(101, "砂岩"), (102, "砂岩")])
+        hole = make_layers([(201, "砂岩"), (202, "砂岩")])
+        # open=2、extend=1：任一未匹配层都付正代价，仅全匹配（0 惩罚）最优
+        res = correlate(ref, hole, [], ZERO_WEIGHTS, 5.0, 2.0, 1.0)
+        self.assertEqual(res["solution_count"], 1)
+        self.assertEqual(
+            [(p["ref_layer_id"], p["hole_layer_id"]) for p in res["pairs"]],
+            [(101, 201), (102, 202)])
+        # open=extend=1：未匹配仍付正代价，仅全匹配最优
+        res = correlate(ref, hole, [], ZERO_WEIGHTS, 5.0, 1.0, 1.0)
+        self.assertEqual(res["solution_count"], 1)
+        # 开/续惩罚全为 0：所有归属代价同为 0，6 个并列
+        res = correlate(ref, hole, [], ZERO_WEIGHTS, 5.0, 0.0, 0.0)
+        self.assertEqual(res["solution_count"], 6)
+        self.assertEqual(res["solutions_listed"], 6)
+
+
 if __name__ == "__main__":
     unittest.main()
