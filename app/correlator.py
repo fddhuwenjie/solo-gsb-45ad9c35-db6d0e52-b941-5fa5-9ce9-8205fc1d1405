@@ -6,29 +6,36 @@
    匹配路径禁止跨越锚点，从而保证标志层不被穿越。
 3. 每段用带仿射间隙惩罚（open/extend）的动态规划做层序对齐，
    相似度由岩性、粒径、含水状态、高程差、置信度加权得到。
-4. 正向表 + 反向表联合判定：哪些匹配/间隙边出现在任意一条最优路径上，
-   由此给出并列解的歧义区间；并枚举最优路径（上限 100 条）。
+4. 正向表 + 反向表联合判定：哪些匹配边/间隙块出现在任意一条最优路径上，
+   由此给出并列解的歧义区间；并枚举最优归属（上限 100 条）。
+并列解的等价口径：一个“方案”（归属）由匹配对集合唯一确定（两侧未匹配层
+集合随之确定）。同一集合可对应多条逐边 DP 路径——间隙区内“跳过参考层
+（GA）”与“跳过待校核层（GB）”可以交错执行，交错顺序不影响归属。
 
-并列解的等价口径：一个“方案”由匹配对集合唯一确定（两侧未匹配层集合随
-之确定）。同一集合可对应多条 DP 路径（间隙区内“跳过参考层”与“跳过待
-校核层”的先后顺序不同），为避免顺序重复计数，DP 只走规范形路径——同
-一间隙段内参考侧间隙（GA）必须排在待校核侧间隙（GB）之前，即禁止 V 态
-后紧跟 H 态。每个匹配对集合恰对应一条规范形路径，因此计数 DP 的并列解
-数、路径枚举与最终方案列表使用同一等价关系。在 gap_open >= gap_extend
-（含全零退化情形）下，任一路径重排为规范形不会变劣，最优总分与最优匹配
-集合均不受影响。
+DP 直接在“匹配节点”（等价类）上进行：F[i][j] 表示以匹配 (i,j) 收尾的
+最优归属分值，两次相邻匹配（或起点/终点）之间是一个**间隙块**，块内有
+a 个未匹配参考层、b 个未匹配待校核层。块的最低仿射代价 _gap_cost(a,b)
+对任意允许的非负 (gap_open, gap_extend) 组合都取该归属能达到的最高分：
+
+- 仅一侧有未匹配层：连续一段，代价 open + (层数-1)*extend；
+- 两侧都有：块由若干交替的 GA 段 / GB 段组成（两侧段数差不超过 1），
+  open >= extend 时段数越少越好（各归为一段，共 2 段，等价于旧规范形
+  “GA 全在 GB 前”）；open < extend 时段数越多越好（两侧逐层交错，
+  各层只付开间隙代价），例如 a=b=2、open=0、extend=1 时交错方案代价 0，
+  而归组要付 2 次续间隙——旧规范形 DP 曾因此漏掉“全部未匹配”最优解。
+
+因此每个归属恰对应一条匹配节点路径，计数 DP、路径枚举、歧义判定与方案
+列表使用同一等价关系，同一归属只计一次、只列一次；对非负惩罚的任意组合
+（含 gap_open=0、gap_extend=1 与全零退化情形）均不漏最优。
 """
-import math
 
 from .domain import (
     lithology_similarity, grain_similarity, water_similarity, elev_similarity,
 )
 
-NEG = -1e18
 EPS = 1e-7
 MAX_SOLUTIONS = 100
 COUNT_CAP = 9999          # 并列解计数封顶，避免大整数
-ENUM_COUNT_LIMIT = 5000  # 解数超过该值时只给前 100 条，不遍历全图
 
 
 def elevation_layer(layer, collar_elev):
@@ -75,227 +82,208 @@ def pair_similarity(a, b, weights, elev_scale):
 # 单段序列对齐（局部坐标：A = 参考孔层，B = 待校核孔层）
 # ---------------------------------------------------------------------------
 
+def _runs_max(a, b):
+    """a 个 GA 与 b 个 GB 两侧交错时最多能切成多少段（同段只含同侧间隙）。"""
+    if a <= 0 or b <= 0:
+        return 1
+    return min(a, b + 1) + min(b, a + 1)
+
+
+def _gap_cost(a, b, gap_open, gap_extend):
+    """相邻两次匹配（或起点/终点）之间的间隙块的最低仿射代价（非负）。
+
+    块内 a 个参考层、b 个待校核层未匹配。单侧为连续一段；两侧交错成
+    R 段（GA 段数与 GB 段数差不超过 1），代价
+    (a+b)*extend + R*(open-extend)，按 open 与 extend 的大小取 R 的
+    最小（=2）或最大值。
+    """
+    if a == 0 and b == 0:
+        return 0.0
+    if a == 0 or b == 0:
+        return gap_open + (a + b - 1) * gap_extend
+    if gap_open >= gap_extend:
+        runs = 2
+    else:
+        runs = _runs_max(a, b)
+    return (a + b) * gap_extend + runs * (gap_open - gap_extend)
+
+
+def _block_key(a, b):
+    """间隙块的主解偏好序（值小优先），沿用逐边 DP 的“匹配 > A间隙 >
+    B间隙”回溯偏好：连续匹配 > 纯 A 间隙 > 纯 B 间隙 > 两侧交错。
+    同类块跨度大者优先（对应旧 H/V 回溯时续间隙尽量延伸），交错块先
+    尽量多排 B 侧（旧回溯先走 V）、再尽量多排 A 侧。"""
+    if a == 0 and b == 0:
+        return (0, 0, 0)
+    if b == 0:
+        return (1, -a, 0)
+    if a == 0:
+        return (2, -b, 0)
+    return (3, -b, -a)
+
+
 def _align_segment(A, B, sim, gap_open, gap_extend):
-    """返回段对齐结果。
+    """返回段对齐结果（在“匹配节点”等价类上做 DP）。
 
-    状态 D：上一步为匹配；H：上一步为 A 出列（B 方向间隙，参考层未匹配）；
-    V：上一步为 B 出列（A 方向间隙，待校核层未匹配）。
+    F[i][j]（i,j>=1）：以匹配 (i,j) 收尾的归属最高分值；F[0][0]=0 为
+    虚拟起点。两条相邻匹配节点 (i0,j0)->(i,j) 之间是一个间隙块，跳过
+    i-i0-1 个 A 层、j-j0-1 个 B 层，代价为 _gap_cost。终点 (n,m) 之后
+    同样允许一个尾部间隙块（不匹配终点）。
 
-    规范形约束：H 态不允许从 V 态转移（禁止 GB 后紧跟 GA），使同一间隙段内
-    GA 一律排在 GB 之前；每个“匹配对集合”因此只对应一条 DP 路径，计数结果
-    即为按等价类去重后的并列解数。
+    每个“匹配对集合”恰对应一条匹配节点路径，因此 cF 的并列数即为按
+    等价类去重后的方案数，不再依赖逐边间隙操作的先后顺序。
     """
     n, m = len(A), len(B)
-    D = [[NEG] * (m + 1) for _ in range(n + 1)]
-    H = [[NEG] * (m + 1) for _ in range(n + 1)]
-    V = [[NEG] * (m + 1) for _ in range(n + 1)]
-    D[0][0] = 0.0
-    # 计数 DP（并列解个数）
-    cD = [[0] * (m + 1) for _ in range(n + 1)]
-    cH = [[0] * (m + 1) for _ in range(n + 1)]
-    cV = [[0] * (m + 1) for _ in range(n + 1)]
-    cD[0][0] = 1
+    F = [[0.0] * (m + 1) for _ in range(n + 1)]
+    cF = [[0] * (m + 1) for _ in range(n + 1)]
+    # 每个匹配节点/终点的最优前驱：[(i0, j0, a, b), ...]，按主解偏好排序
+    preds = [[[] for _ in range(m + 1)] for _ in range(n + 1)]
+    cF[0][0] = 1
+    # 间隙块代价表（每段只算一次）：g[a][b] = _gap_cost(a, b, ...)
+    g = [[_gap_cost(a, b, gap_open, gap_extend) for b in range(m + 1)]
+         for a in range(n + 1)]
 
-    def add_count(cnt, best, val, c):
-        if val > best + EPS:
-            return val, c
-        if abs(val - best) <= EPS:
-            return best, min(COUNT_CAP, cnt + c)
-        return best, cnt
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            # 收集所有前驱（首个匹配的前驱是虚拟起点 (0,0)）
+            cand = [(0, 0, i - 1, j - 1,
+                     F[0][0] + sim[(i, j)] - g[i - 1][j - 1])]
+            for i0 in range(1, i):
+                ga = g[i - i0 - 1]
+                fi = F[i0]
+                for j0 in range(1, j):
+                    if cF[i0][j0] == 0:
+                        continue
+                    b = j - j0 - 1
+                    cand.append((i0, j0, i - i0 - 1, b,
+                                 fi[j0] + sim[(i, j)] - ga[b]))
+            best = max(c[4] for c in cand)
+            chosen = [(c[0], c[1], c[2], c[3]) for c in cand
+                      if abs(c[4] - best) <= EPS]
+            cnt = 0
+            for i0, j0, _, _ in chosen:
+                cnt = min(COUNT_CAP, cnt + cF[i0][j0])
+            chosen.sort(key=lambda t: _block_key(t[2], t[3]))
+            F[i][j], cF[i][j], preds[i][j] = best, cnt, chosen
 
-    for i in range(n + 1):
-        for j in range(m + 1):
-            if i == 0 and j == 0:
+    # 虚拟终点：尾部间隙块（最后一个匹配 (i0,j0) -> (n,m)），或整段全未匹配
+    end_cand = []
+    for i0 in range(0, n + 1):
+        gn = g[n - i0]
+        fi = F[i0]
+        for j0 in range(0, m + 1):
+            if cF[i0][j0] == 0:
                 continue
-            if i >= 1 and j >= 1:
-                s = sim[(i, j)]
-                best, cnt = NEG, 0
-                for pv, pc in ((D[i-1][j-1], cD[i-1][j-1]),
-                               (H[i-1][j-1], cH[i-1][j-1]),
-                               (V[i-1][j-1], cV[i-1][j-1])):
-                    best, cnt = add_count(cnt, best, pv + s, pc)
-                D[i][j], cD[i][j] = best, cnt
-            if i >= 1:
-                best, cnt = NEG, 0
-                best, cnt = add_count(cnt, best, H[i-1][j] - gap_extend, cH[i-1][j])
-                best, cnt = add_count(cnt, best, D[i-1][j] - gap_open, cD[i-1][j])
-                # 规范形：不允许 V -> H（GB 后不得紧跟 GA）
-                H[i][j], cH[i][j] = best, cnt
-            if j >= 1:
-                best, cnt = NEG, 0
-                best, cnt = add_count(cnt, best, V[i][j-1] - gap_extend, cV[i][j-1])
-                best, cnt = add_count(cnt, best, D[i][j-1] - gap_open, cD[i][j-1])
-                best, cnt = add_count(cnt, best, H[i][j-1] - gap_open, cH[i][j-1])
-                V[i][j], cV[i][j] = best, cnt
-
-    total = max(D[n][m], H[n][m], V[n][m])
+            end_cand.append((i0, j0, n - i0, m - j0,
+                             fi[j0] - gn[m - j0]))
+    total = max(c[4] for c in end_cand)
+    end_preds = [(c[0], c[1], c[2], c[3]) for c in end_cand
+                 if abs(c[4] - total) <= EPS]
     total_count = 0
-    for tv, tc in ((D[n][m], cD[n][m]), (H[n][m], cH[n][m]), (V[n][m], cV[n][m])):
-        if abs(tv - total) <= EPS:
-            total_count = min(COUNT_CAP, total_count + tc)
+    for i0, j0, _, _ in end_preds:
+        total_count = min(COUNT_CAP, total_count + cF[i0][j0])
+    end_preds.sort(key=lambda t: _block_key(t[2], t[3]))
 
-    # 反向表：RD[i][j] = 以“匹配态”到达节点 (i,j) 后走到终点的最优 suffix
-    RD = [[NEG] * (m + 1) for _ in range(n + 1)]
-    RH = [[NEG] * (m + 1) for _ in range(n + 1)]
-    RV = [[NEG] * (m + 1) for _ in range(n + 1)]
-    RD[n][m] = RH[n][m] = RV[n][m] = 0.0
-    for i in range(n, -1, -1):
-        for j in range(m, -1, -1):
-            if i == n and j == m:
-                continue
-            vals_d, vals_h, vals_v = [], [], []
-            if i < n and j < m:
-                suffix = sim[(i+1, j+1)] + RD[i+1][j+1]
-                vals_d.append(suffix)
-                vals_h.append(suffix)
-                vals_v.append(suffix)
-            if i < n:
-                vals_d.append(-gap_open + RH[i+1][j])
-                vals_h.append(-gap_extend + RH[i+1][j])
-                # 规范形：V 态之后不得进入 H 态，vals_v 不加 H 方向
-            if j < m:
-                vals_d.append(-gap_open + RV[i][j+1])
-                vals_h.append(-gap_open + RV[i][j+1])
-                vals_v.append(-gap_extend + RV[i][j+1])
-            RD[i][j] = max(vals_d)
-            RH[i][j] = max(vals_h)
-            # i<n 且 j==m 时 V 态无任何合法后继（H 被禁），视为不可达
-            RV[i][j] = max(vals_v) if vals_v else NEG
+    # 反向表：B[i][j] = 以匹配 (i,j) 收尾后走到终点的最优 suffix
+    # （不含 (i,j) 自身的相似度）；B[0][0] = total
+    B = [[0.0] * (m + 1) for _ in range(n + 1)]
+    B[0][0] = total
+    for i in range(n, 0, -1):
+        for j in range(m, 0, -1):
+            best = -g[n - i][m - j]
+            for i2 in range(i + 1, n + 1):
+                ga = g[i2 - i - 1]
+                bi = B[i2]
+                for j2 in range(j + 1, m + 1):
+                    val = -ga[j2 - j - 1] + sim[(i2, j2)] + bi[j2]
+                    if val > best:
+                        best = val
+            B[i][j] = best
 
-    # ---- 判定每条匹配边 (i,j) 是否在某条最优路径上 ----
-    match_edges = {}                 # (i,j) -> bool
+    # ---- 判定每条匹配边 (i,j) 是否在某条最优归属上 ----
     match_partners = {i: set() for i in range(1, n + 1)}
     for i in range(1, n + 1):
         for j in range(1, m + 1):
-            pre = max(D[i-1][j-1], H[i-1][j-1], V[i-1][j-1])
-            on_path = abs(pre + sim[(i, j)] + RD[i][j] - total) <= 1e-5
-            if on_path:
-                match_edges[(i, j)] = True
+            if abs(F[i][j] + B[i][j] - total) <= 1e-5:
                 match_partners[i].add(j)
 
-    # ---- 参考层 i 的“被跳过”位置（间隙边）----
-    gap_positions = {i: set() for i in range(1, n + 1)}
-    for i in range(1, n + 1):
-        for j in range(0, m + 1):
-            # 边 (i-1,j) -> (i,j)，A[i] 出列（规范形：前驱不含 V 态）
-            best = max(
-                H[i-1][j] - gap_extend,
-                D[i-1][j] - gap_open,
-            )
-            if best <= NEG / 2:
-                continue
-            if abs(best + RH[i][j] - total) <= 1e-5:
-                gap_positions[i].add(j)
+    # ---- 哪些参考层能在某条最优归属中处于未匹配间隙块 ----
+    skip_a = {i: False for i in range(1, n + 1)}
 
-    # ---- 主解回溯（偏好：匹配 > A间隙 > B间隙）----
-    primary = []
-    i, j, state = n, m, ("D" if abs(D[n][m] - total) <= EPS
-                         else "H" if abs(H[n][m] - total) <= EPS else "V")
-    while i > 0 or j > 0:
-        if state == "D":
-            s = sim[(i, j)]
-            pre = max(D[i-1][j-1], H[i-1][j-1], V[i-1][j-1])
-            primary.append(("M", i, j))
-            state = "D" if abs(D[i-1][j-1] - pre) <= EPS else \
-                    "H" if abs(H[i-1][j-1] - pre) <= EPS else "V"
-            i, j = i - 1, j - 1
-        elif state == "H":
-            cands = (
-                ("H", H[i-1][j] - gap_extend, H[i-1][j]),
-                ("D", D[i-1][j] - gap_open, D[i-1][j]),
-            )
-            best = max(c[1] for c in cands)
-            nxt = next(c[0] for c in cands if abs(c[1] - best) <= EPS)
-            primary.append(("GA", i, 0))   # A[i] 未匹配
-            i, state = i - 1, nxt
-        else:
-            cands = (
-                ("V", V[i][j-1] - gap_extend, V[i][j-1]),
-                ("D", D[i][j-1] - gap_open, D[i][j-1]),
-                ("H", H[i][j-1] - gap_open, H[i][j-1]),
-            )
-            best = max(c[1] for c in cands)
-            nxt = next(c[0] for c in cands if abs(c[1] - best) <= EPS)
-            primary.append(("GB", 0, j))   # B[j] 未匹配
-            j, state = j - 1, nxt
-    primary.reverse()
+    # 相邻匹配节点之间的块：块在最优归属上当且仅当
+    # F[i0][j0] - cost + sim[(i,j)] + B[i][j] == total
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            sbij = sim[(i, j)] + B[i][j]
+            for i0, j0, a, b in preds[i][j]:
+                if abs(F[i0][j0] - g[a][b] + sbij - total) <= 1e-5:
+                    for x in range(i0 + 1, i):
+                        skip_a[x] = True
+    # 尾部块：最后一个匹配 (i0,j0) -> 虚拟终点
+    for i0, j0, a, b in end_preds:
+        if abs(F[i0][j0] - g[a][b] - total) <= 1e-5:
+            for x in range(i0 + 1, n + 1):
+                skip_a[x] = True
+
+    # 主解不在这里单独回溯：枚举时 end_preds/preds 已按 _block_key 偏好
+    # 排序，DFS 产出的第一条链即主解（correlate 取去重后首条）。
 
     return {
         "total": total,
         "count": total_count,
-        "steps": primary,
-        "match_edges": match_edges,
         "match_partners": match_partners,
-        "gap_positions": gap_positions,
-        "D": D, "H": H, "V": V,
-        "RD": RD, "RH": RH, "RV": RV,
+        "skip_a": skip_a,
+        "preds": preds,
+        "end_preds": end_preds,
     }
 
 
+def _expand_chain_steps(chain, n, m):
+    """把匹配节点链展开为逐边步骤（M/GA/GB，1 基局部坐标）。
+
+    间隙块内按规范顺序先列 GA 再列 GB——仅用于输出确定性，不参与计分；
+    归属等价类与块内顺序无关。
+    """
+    steps = []
+    prev_i, prev_j = 0, 0
+    for i, j in chain:
+        if (i, j) == (0, 0):
+            continue
+        for x in range(prev_i + 1, i):
+            steps.append(("GA", x, 0))
+        for y in range(prev_j + 1, j):
+            steps.append(("GB", 0, y))
+        steps.append(("M", i, j))
+        prev_i, prev_j = i, j
+    for x in range(prev_i + 1, n + 1):
+        steps.append(("GA", x, 0))
+    for y in range(prev_j + 1, m + 1):
+        steps.append(("GB", 0, y))
+    return steps
+
+
 def _enum_segment_paths(seg, limit=MAX_SOLUTIONS):
-    """在最优子图上 DFS 枚举段内并列最优路径（步骤为段内局部坐标，1 基）。"""
-    A_len, B_len = seg["n"], seg["m"]
-    total = seg["total"]
-    sim = seg["sim"]
-    D, H, V = seg["D"], seg["H"], seg["V"]
-    RD, RH, RV = seg["RD"], seg["RH"], seg["RV"]
-    go, ge = seg["gap_open"], seg["gap_extend"]
+    """在最优前驱图上 DFS 枚举段内并列最优归属，返回匹配节点链列表
+    （段内局部坐标，1 基，按匹配先后排序）。每个归属恰一条链，天然去重。"""
+    n, m = seg["n"], seg["m"]
     results = []
 
-    def dfs(i, j, state, path):
+    def dfs(i0, j0, chain):
         if len(results) >= limit:
             return
-        if i == 0 and j == 0:
-            results.append(list(reversed(path)))
+        if (i0, j0) == (0, 0):
+            results.append(list(reversed(chain)))
             return
-        if state == "D":
-            if i > 0 and j > 0:
-                pre = max(D[i-1][j-1], H[i-1][j-1], V[i-1][j-1])
-                if abs(pre + sim[(i, j)] + RD[i][j] - total) <= 1e-5:
-                    for pst, pv in (("D", D[i-1][j-1]),
-                                    ("V", V[i-1][j-1]),
-                                    ("H", H[i-1][j-1])):
-                        if abs(pv - pre) <= EPS:
-                            path.append(("M", i, j))
-                            dfs(i-1, j-1, pst, path)
-                            path.pop()
-                            if len(results) >= limit:
-                                return
-        elif state == "H":
-            cands = (
-                ("H", H[i-1][j] - ge, H[i-1][j]),
-                ("D", D[i-1][j] - go, D[i-1][j]),
-            ) if i > 0 else ()
-            best = max((c[1] for c in cands), default=NEG)
-            if best > NEG / 2 and abs(best + RH[i][j] - total) <= 1e-5:
-                for pst, val, _ in cands:
-                    if abs(val - best) <= EPS:
-                        path.append(("GA", i, 0))
-                        dfs(i-1, j, pst, path)
-                        path.pop()
-                        if len(results) >= limit:
-                            return
-        else:
-            cands = (
-                ("V", V[i][j-1] - ge, V[i][j-1]),
-                ("D", D[i][j-1] - go, D[i][j-1]),
-                ("H", H[i][j-1] - go, H[i][j-1]),
-            ) if j > 0 else ()
-            best = max((c[1] for c in cands), default=NEG)
-            if best > NEG / 2 and abs(best + RV[i][j] - total) <= 1e-5:
-                for pst, val, _ in cands:
-                    if abs(val - best) <= EPS:
-                        path.append(("GB", 0, j))
-                        dfs(i, j-1, pst, path)
-                        path.pop()
-                        if len(results) >= limit:
-                            return
+        for pi, pj, _, _ in seg["preds"][i0][j0]:
+            chain.append((pi, pj))
+            dfs(pi, pj, chain)
+            chain.pop()
+            if len(results) >= limit:
+                return
 
-    n, m = A_len, B_len
-    # D/H/V 三个终止态可能彼此并列，逐一作为起点枚举
-    for end_state in ("D", "H", "V"):
-        if abs({"D": D[n][m], "H": H[n][m], "V": V[n][m]}[end_state] - total) <= EPS:
-            dfs(n, m, end_state, [])
+    # 终点前驱已按主解偏好排序，第一条枚举到的即主解
+    for i0, j0, _, _ in seg["end_preds"]:
+        dfs(i0, j0, [(i0, j0)] if (i0, j0) != (0, 0) else [])
         if len(results) >= limit:
             break
     return results
@@ -351,8 +339,9 @@ def correlate(ref_layers, hole_layers, anchors, weights, elev_scale,
     for r in segments:
         solution_count = min(COUNT_CAP, solution_count * r["count"])
 
-    # 各段枚举（封顶 100 条），后做笛卡尔积
-    seg_paths = [_enum_segment_paths(r) for r in segments]
+    # 各段枚举归属链（封顶 100 条），展开为步骤后做笛卡尔积
+    seg_paths = [[_expand_chain_steps(chain, r["n"], r["m"]) for chain in
+                  _enum_segment_paths(r)] for r in segments]
     full_solutions = []
 
     def combine(seg_k, acc):
@@ -362,10 +351,11 @@ def correlate(ref_layers, hole_layers, anchors, weights, elev_scale,
             full_solutions.append(list(acc))
             return
         ia, jb = bounds[seg_k + 1]
+        seg = segments[seg_k]
         for path in seg_paths[seg_k]:
             for kind, pi, pj in path:
-                gi = segments[seg_k]["a_idx"][pi-1] if kind in ("M", "GA") else None
-                gj = segments[seg_k]["b_idx"][pj-1] if kind in ("M", "GB") else None
+                gi = seg["a_idx"][pi-1] if kind in ("M", "GA") else None
+                gj = seg["b_idx"][pj-1] if kind in ("M", "GB") else None
                 acc.append((kind, gi, gj))
             if (ia, jb) != (n, m):
                 acc.append(("X", ia, jb))   # 强制锚点
@@ -385,9 +375,9 @@ def correlate(ref_layers, hole_layers, anchors, weights, elev_scale,
             gi = r["a_idx"][pi-1]
             for pj in pjs:
                 partners[gi].add(r["b_idx"][pj-1])
-        for pi, pjs in r["gap_positions"].items():
-            gi = r["a_idx"][pi-1]
-            gap_pos[gi].update(pjs)   # pj 是段内节点位置
+        for pi in range(1, r["n"] + 1):
+            if r["skip_a"][pi]:
+                gap_pos[r["a_idx"][pi-1]].add(1)   # 占位：该参考层可未匹配
     anchor_set_i = {ia for ia, _ in anchors}
 
     def build_solution(steps):
@@ -420,9 +410,9 @@ def correlate(ref_layers, hole_layers, anchors, weights, elev_scale,
         return pairs, unref, unhole, gap_count
 
     raw_solutions = [build_solution(steps) for steps in full_solutions]
-    # 按“匹配对集合 + 未匹配层集合”去重：段内枚举已只产生规范形路径，
-    # 这里再按同一等价关系兜底去重，保证 solutions_listed 与 solution_count
-    # 口径一致（间隙插入顺序不同但归属相同的方案只算、只列一次）
+    # 按“匹配对集合 + 未匹配层集合”去重：段内 DP/枚举已在等价类上进行
+    # （每个归属恰一条匹配节点链），这里再按同一等价关系跨段兜底去重，
+    # 保证 solutions_listed 与 solution_count 口径一致。
     seen, solutions_out = set(), []
     for sol in raw_solutions:
         sig = (

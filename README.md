@@ -25,11 +25,58 @@ python wsgi.py          # http://localhost:8000
 ### 运行测试
 
 核心算法（`app/correlator.py`）不依赖 Flask，可直接运行回归测试
-（含“全零参数下单层对单层只计 2 个并列解”的反例与多标志层分段组合用例）：
+（含“全零参数下单层对单层只计 2 个并列解”的反例、低开间隙惩罚
+`gap_open=0/gap_extend=1` 下两层对两层“全部未匹配”不漏解、共 6 个归属
+的触发例与多标志层锚点回归用例）：
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+安装了 Flask 时（如 Docker 容器内）还会额外运行经真实 HTTP 接口
+（`PUT /api/settings` + `POST /api/correlate` + `GET /api/export`）的端到端用例；
+纯算法本地环境自动跳过。
+
+### 复现：低开间隙惩罚下的 6 个最优归属
+
+`docker compose up -d --build` 启动后，以下脚本建两口各含两层的钻孔，
+把五项相似度权重清零、设 `gap_open=0、gap_extend=1` 后重算——交错跳过
+两侧层段的“全部未匹配”归属 DP 分为 0，与其余 5 个归属并列，共返回 6 个：
+
+```bash
+BASE=http://localhost:8000
+
+# 两口各两层、同高程、同岩性（权重随后清零，属性只用于通过录入校验）
+RID=$(curl -s -X POST "$BASE/api/boreholes" -H 'Content-Type: application/json' -d '{
+  "name":"R1","x":0,"collar_elev":100,"layers":[
+    {"seq":1,"top":0,"bottom":2,"lithology":"砂岩","grain":"中粒","water":"稍湿","confidence":0.9},
+    {"seq":2,"top":2,"bottom":4,"lithology":"砂岩","grain":"中粒","water":"稍湿","confidence":0.9}]}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+HID=$(curl -s -X POST "$BASE/api/boreholes" -H 'Content-Type: application/json' -d '{
+  "name":"H1","x":10,"collar_elev":100,"layers":[
+    {"seq":1,"top":0,"bottom":2,"lithology":"砂岩","grain":"中粒","water":"稍湿","confidence":0.9},
+    {"seq":2,"top":2,"bottom":4,"lithology":"砂岩","grain":"中粒","water":"稍湿","confidence":0.9}]}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+
+# 五项权重全 0 + 低开间隙（接口允许 open < extend 的非负组合）
+curl -s -X PUT "$BASE/api/settings" -H 'Content-Type: application/json' -d '{
+  "weights":{"lithology":0,"grain":0,"water":0,"elev":0,"confidence":0},
+  "gap_open":0,"gap_extend":1}' >/dev/null
+
+# 重算：solution_count 应为 6，tie_solutions 含 1 个“全部未匹配”
+curl -s -X POST "$BASE/api/correlate" -H 'Content-Type: application/json' \
+  -d "{\"reference_id\":$RID,\"marker_ids\":[]}" \
+  | python3 -c '
+import sys,json
+h=json.load(sys.stdin)["holes"][0]
+print("solution_count =",h["solution_count"]," solutions_listed =",h["solutions_listed"])
+for s in h["tie_solutions"]:
+    print(" pairs=%s unmatched_ref=%s unmatched_hole=%s score=%s gaps=%s"
+          %(s["pairs"],s["unmatched_ref"],s["unmatched_hole"],s["score"],s["gap_count"]))'
+```
+
+预期输出（顺序以主解偏好为准，集合一致即可）：`solution_count = 6`，
+6 个归属分别为 1 个双对匹配、4 个单对匹配与 1 个**全部未匹配**（只计、只列一次）。
 
 ## 功能
 
@@ -40,8 +87,9 @@ python3 -m unittest discover -s tests -v
   DP 匹配路径**禁止跨越锁定标志层**（锚点交叉顺序冲突会直接报错）。
 - **带间隙惩罚的动态规划**：
   - 层间相似度 = 岩性 / 粒径 / 含水状态 / 高程接近度（指数衰减）/ 置信度五项加权；
-  - 三态 DP（匹配态、参考孔间隙态、待校核孔间隙态）实现**仿射间隙代价**（开间隙 `gap_open`、续间隙 `gap_extend`），
-    保持层序单调、允许尖灭/缺失/新增层；
+  - 三态 Gotoh 间隙模型（开间隙 `gap_open`、续间隙 `gap_extend`）在**匹配节点等价类**
+    上动态规划：相邻匹配之间的未匹配层按该归属可达的最高分值（最优交错/归组段数）计费，
+    允许任意非负 open/extend 组合，保持层序单调、允许尖灭/缺失/新增层；
   - 总分按 `匹配相似度之和 / max(两孔层数) × 100` 归一化。
 - **输出**：相关层带（匹配对及五项相似度明细）、未匹配层（参考孔侧/待校核孔侧分列）、
   锚点对、总分与多孔平均分。
@@ -49,9 +97,11 @@ python3 -m unittest discover -s tests -v
   - 列出存在并列最优的层位及其全部候选（含“可未匹配”结局）；
   - 给出候选的**高程歧义区间**（最低–最高高程、跨度），剖面图以紫色虚线候选连线和歧义带显示；
   - 并列解按“**匹配对集合 + 两侧未匹配层集合**”的等价关系计数：同一归属方案不会因
-    间隙操作先后顺序（先跳过参考层还是先跳过待校核层）被重复计数——段内 DP 只走规范形
-    路径（同一间隙段内参考侧间隙在待校核侧间隙之前），多标志层分段组合按同一签名去重，
-    `solution_count` 与 `solutions_listed` 口径一致；
+    间隙操作先后顺序（先跳过参考层还是先跳过待校核层）被重复计数——DP 直接在匹配节点
+    （归属等价类）上进行：相邻两次匹配之间的“间隙块”按该归属**可达到的最高 DP 分值**
+    计费，支持接口允许的任意非负 `gap_open/gap_extend` 组合（含 `gap_open=0 < gap_extend`
+    的低开惩罚：此时两侧层逐层交错跳过、每段只付开间隙代价，比固定先跳完一侧再跳另
+    一侧更优，例如“全部未匹配”不会再被漏掉）；
   - 并列解计数封顶 9999，并列方案枚举最多列出前 100 条，可在结果区弹窗逐方案查看。
 - **剖面图**：SVG 绘制统一高程的钻孔柱状，连线颜色区分普通匹配 / 标志层锚点 / 歧义候选，
   未匹配层标红叉，悬停层块查看属性，可开关歧义带与相似度标注。
@@ -89,11 +139,11 @@ python3 -m unittest discover -s tests -v
 app/
   db.py           SQLite 建表 / 默认参数
   domain.py       岩性族字典、属性相似度
-  correlator.py   三态 DP、标志层分段、正反表歧义判定、并列解枚举
+  correlator.py   等价类 DP（仿射间隙块代价）、标志层分段、正反表歧义判定、并列解枚举
   seed.py         内置演示数据
   routes.py       Flask 路由
   static/         index.html / style.css / app.js（原生前端，SVG 剖面）
-tests/            并列解计数口径回归测试（unittest，无需 Flask）
+tests/            并列解口径、低开间隙漏解、锚点分段与 HTTP 触发回归（unittest）
 wsgi.py           开发入口 & gunicorn 入口
 Dockerfile / docker-compose.yml
 ```
