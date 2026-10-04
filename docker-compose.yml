@@ -1,0 +1,15 @@
+services:
+  correlation-bench:
+    build: .
+    image: borehole-correlation-bench:latest
+    container_name: borehole-correlation-bench
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/config')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

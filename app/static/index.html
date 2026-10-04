@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>钻孔地层关联校核台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">⛏</span>
+    <div>
+      <h1>钻孔地层关联校核台</h1>
+      <small>高程统一 · 带间隙惩罚动态规划 · 标志层锁定 · 歧义区间校核</small>
+    </div>
+  </div>
+  <div class="top-actions">
+    <button id="btnRecalc" class="primary">▶ 重新计算关联</button>
+    <a id="btnExport" class="btn" href="/api/export" target="_blank">⬇ 导出 JSON</a>
+    <button id="btnReset" class="ghost" title="清空并恢复内置演示数据">↺ 恢复演示数据</button>
+  </div>
+</header>
+
+<main class="layout">
+  <!-- 左：钻孔与层段 -->
+  <section class="panel panel-holes">
+    <div class="panel-head">
+      <h2>钻孔与岩性层段</h2>
+      <button id="btnAddHole" class="small">＋ 新钻孔</button>
+    </div>
+    <div id="holeList" class="hole-list"></div>
+  </section>
+
+  <!-- 中：剖面 -->
+  <section class="panel panel-section">
+    <div class="panel-head">
+      <h2>关联剖面图（统一高程）</h2>
+      <div class="section-tools">
+        <label class="ck"><input type="checkbox" id="chkAmb" checked> 显示歧义区间</label>
+        <label class="ck"><input type="checkbox" id="chkScores" checked> 显示相似度</label>
+      </div>
+    </div>
+    <div id="sectionWrap" class="section-wrap">
+      <div class="placeholder" id="sectionPlaceholder">
+        选择参考孔并锁定标志层后，点击「重新计算关联」生成剖面连线
+      </div>
+      <svg id="sectionSvg"></svg>
+    </div>
+    <div class="legend" id="legend"></div>
+  </section>
+
+  <!-- 右：控制 + 结果 -->
+  <aside class="panel panel-side">
+    <div class="side-block">
+      <h3>① 参考孔与标志层</h3>
+      <label class="field">参考孔
+        <select id="refSelect"></select>
+      </label>
+      <div class="marker-lock" id="markerLock"></div>
+      <button id="btnAddMarker" class="small wide">＋ 新建标志层</button>
+    </div>
+
+    <div class="side-block">
+      <h3>② 相似度权重与间隙惩罚</h3>
+      <div id="weightSliders"></div>
+      <label class="field-inline">高程特征尺度 (m)
+        <input type="number" id="inpElevScale" min="0.5" step="0.5">
+      </label>
+      <label class="field-inline">开间隙惩罚
+        <input type="number" id="inpGapOpen" min="0" step="0.1">
+      </label>
+      <label class="field-inline">续间隙惩罚
+        <input type="number" id="inpGapExtend" min="0" step="0.1">
+      </label>
+      <button id="btnSaveWeights" class="small wide">保存参数并重算</button>
+      <button id="btnDefaultWeights" class="small ghost wide">恢复默认参数</button>
+    </div>
+
+    <div class="side-block results">
+      <h3>③ 校核结果</h3>
+      <div id="resultSummary"></div>
+      <div id="resultHoles"></div>
+    </div>
+  </aside>
+</main>
+
+<!-- 钻孔编辑弹窗 -->
+<div class="modal-mask" id="holeModal" hidden>
+  <div class="modal modal-wide">
+    <div class="modal-head">
+      <h3 id="holeModalTitle">钻孔</h3>
+      <button class="x" data-close="holeModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label class="field">孔名 <input id="fHoleName" required></label>
+        <label class="field">水平位置 x (m) <input id="fHoleX" type="number" step="1"></label>
+        <label class="field">孔口高程 (m) <input id="fHoleElev" type="number" step="0.1" required></label>
+        <label class="field grow">备注 <input id="fHoleNote"></label>
+      </div>
+      <div class="layer-table-wrap">
+        <table class="layer-table">
+          <thead>
+            <tr>
+              <th>顶深(m)</th><th>底深(m)</th><th>岩性</th><th>粒径</th>
+              <th>含水状态</th><th>置信度</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="layerTbody"></tbody>
+        </table>
+      </div>
+      <button id="btnAddLayer" class="small">＋ 添加层段</button>
+      <p class="hint">层段按顶深自动排序；顶深/底深为自孔口向下的深度。</p>
+    </div>
+    <div class="modal-foot">
+      <button class="danger ghost" id="btnDeleteHole" hidden>删除此孔</button>
+      <span class="spacer"></span>
+      <button class="ghost" data-close="holeModal">取消</button>
+      <button class="primary" id="btnSaveHole">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 标志层弹窗 -->
+<div class="modal-mask" id="markerModal" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="markerModalTitle">标志层</h3>
+      <button class="x" data-close="markerModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <label class="field">标签 <input id="fMarkerLabel" placeholder="如 M1"></label>
+      <label class="field">说明 <input id="fMarkerDesc"></label>
+      <p class="hint">在每口孔中指定对应层（可不选）。关联时锁定标志层强制对齐，匹配路径禁止跨越。</p>
+      <div id="markerLinkRows"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="danger ghost" id="btnDeleteMarker" hidden>删除标志层</button>
+      <span class="spacer"></span>
+      <button class="ghost" data-close="markerModal">取消</button>
+      <button class="primary" id="btnSaveMarker">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 并列解弹窗 -->
+<div class="modal-mask" id="tiesModal" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h3>并列最优解</h3>
+      <button class="x" data-close="tiesModal">✕</button>
+    </div>
+    <div class="modal-body" id="tiesBody"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

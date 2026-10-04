@@ -1,0 +1,243 @@
+:root {
+  --bg: #f4f6f8;
+  --panel: #ffffff;
+  --ink: #1f2a33;
+  --ink-2: #586875;
+  --line: #d9e0e6;
+  --primary: #1f6f8b;
+  --primary-d: #16556b;
+  --accent: #d97b2b;
+  --danger: #c0392b;
+  --ok: #2e8b57;
+  --amb: #8e44ad;
+  --shadow: 0 1px 3px rgba(20, 40, 60, .08);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font: 13.5px/1.55 "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+h1 { font-size: 17px; margin: 0; }
+h2 { font-size: 14.5px; margin: 0; }
+h3 { font-size: 13.5px; margin: 0 0 8px; }
+small { color: var(--ink-2); }
+
+button, .btn {
+  font: inherit;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  padding: 6px 14px;
+  border-radius: 5px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+  white-space: nowrap;
+}
+button:hover, .btn:hover { border-color: var(--primary); color: var(--primary); }
+button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+button.primary:hover { background: var(--primary-d); color: #fff; }
+button.ghost { background: transparent; }
+button.danger { color: var(--danger); border-color: #e3b4ae; }
+button.danger:hover { background: #fdecea; }
+button.small { padding: 3px 10px; font-size: 12.5px; }
+button.wide { width: 100%; margin-top: 6px; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  background: #fff; border-bottom: 1px solid var(--line);
+  padding: 8px 16px; box-shadow: var(--shadow); z-index: 5;
+}
+.brand { display: flex; align-items: center; gap: 10px; }
+.logo { font-size: 26px; }
+.top-actions { display: flex; gap: 8px; }
+
+.layout {
+  flex: 1; display: grid;
+  grid-template-columns: 300px minmax(460px, 1fr) 340px;
+  gap: 10px; padding: 10px; min-height: 0;
+}
+.panel {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; min-height: 0;
+}
+.panel-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px; border-bottom: 1px solid var(--line);
+}
+.section-tools { display: flex; gap: 12px; }
+.ck { font-size: 12px; color: var(--ink-2); display: flex; align-items: center; gap: 4px; }
+
+/* ---------- 左：钻孔列表 ---------- */
+.hole-list { overflow: auto; padding: 8px; flex: 1; }
+.hole-card {
+  border: 1px solid var(--line); border-radius: 7px;
+  margin-bottom: 8px; overflow: hidden;
+}
+.hole-card.ref { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary) inset; }
+.hole-card-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; background: #f7fafb; cursor: pointer;
+}
+.hole-card-head .nm { font-weight: 600; }
+.hole-card-head .meta { color: var(--ink-2); font-size: 12px; }
+.hole-card-head .ref-tag {
+  background: var(--primary); color: #fff; font-size: 10.5px;
+  padding: 1px 6px; border-radius: 8px;
+}
+.hole-card-head .set-ref { margin-left: auto; font-size: 11.5px; }
+.hole-mini { padding: 6px 10px 8px; }
+.hole-mini .row {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-size: 12px; padding: 2px 0; border-bottom: 1px dashed #eef2f4;
+}
+.hole-mini .row:last-child { border-bottom: none; }
+.hole-mini .swatch {
+  display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+  margin-right: 5px; vertical-align: -1px; border: 1px solid rgba(0,0,0,.12);
+}
+.hole-mini .edit-link { color: var(--primary); cursor: pointer; font-size: 12px; }
+
+/* ---------- 中：剖面 ---------- */
+.section-wrap { flex: 1; position: relative; overflow: auto; min-height: 0; }
+.placeholder {
+  position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; color: var(--ink-2); font-size: 13.5px;
+}
+#sectionSvg { display: block; }
+.legend {
+  border-top: 1px solid var(--line); padding: 7px 12px;
+  display: flex; flex-wrap: wrap; gap: 10px 14px; font-size: 11.5px;
+  color: var(--ink-2);
+}
+.legend .item { display: flex; align-items: center; gap: 4px; }
+.legend .ln { width: 22px; height: 0; border-top: 3px solid; }
+
+/* ---------- 右：侧栏 ---------- */
+.panel-side { overflow: auto; }
+.side-block { padding: 12px; border-bottom: 1px solid var(--line); }
+.field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--ink-2); margin-bottom: 8px; }
+.field select, .field input { padding: 6px 8px; border: 1px solid var(--line); border-radius: 5px; font: inherit; color: var(--ink); }
+.field-inline { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2); margin-bottom: 6px; }
+.field-inline input { width: 88px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 5px; font: inherit; }
+
+.marker-lock .mk-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 6px;
+}
+.mk-row input { accent-color: var(--primary); }
+.mk-row .lb { font-weight: 600; }
+.mk-row .ds { color: var(--ink-2); font-size: 11.5px; }
+.mk-row .edit-mk { margin-left: auto; font-size: 11.5px; }
+
+.slider-row { margin-bottom: 7px; }
+.slider-row .sl-head { display: flex; justify-content: space-between; font-size: 12px; }
+.slider-row input[type=range] { width: 100%; accent-color: var(--primary); }
+
+.score-big { font-size: 26px; font-weight: 700; color: var(--primary); }
+.score-big small { font-size: 12px; font-weight: 400; }
+.kvgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; font-size: 12px; margin: 6px 0 10px; }
+.kvgrid b { color: var(--ink); }
+
+.result-hole {
+  border: 1px solid var(--line); border-radius: 7px; margin-bottom: 8px; overflow: hidden;
+}
+.result-hole-head {
+  padding: 6px 10px; background: #f7fafb;
+  display: flex; align-items: center; gap: 8px; font-weight: 600;
+}
+.result-hole-head .sc { margin-left: auto; color: var(--primary); }
+.result-hole-body { padding: 7px 10px; font-size: 12px; }
+.tag {
+  display: inline-block; font-size: 10.5px; padding: 1px 7px; border-radius: 8px;
+  background: #eef4f6; color: var(--primary-d); margin: 2px 4px 2px 0;
+}
+.tag.amb { background: #f4ecf7; color: var(--amb); }
+.tag.warn { background: #fdecea; color: var(--danger); }
+.tag.unm { background: #f2f2f2; color: var(--ink-2); }
+.result-hole-body .line { margin: 3px 0; }
+.linkbtn { color: var(--primary); cursor: pointer; text-decoration: underline; }
+
+/* ---------- 弹窗 ---------- */
+.modal-mask {
+  position: fixed; inset: 0; background: rgba(20,35,45,.42);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.modal-mask[hidden] { display: none; }
+.modal {
+  background: #fff; border-radius: 10px; width: 520px; max-width: 94vw;
+  max-height: 88vh; display: flex; flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0,0,0,.25);
+}
+.modal-wide { width: 860px; }
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--line);
+}
+.modal-head h3 { margin: 0; }
+.x { border: none; background: none; font-size: 15px; color: var(--ink-2); }
+.modal-body { padding: 14px 16px; overflow: auto; }
+.modal-foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 16px; border-top: 1px solid var(--line);
+}
+.spacer { flex: 1; }
+.form-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.form-row .field { flex: 1 1 130px; }
+.form-row .grow { flex: 2 1 200px; }
+
+.layer-table-wrap { overflow-x: auto; margin: 6px 0; }
+.layer-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.layer-table th, .layer-table td { padding: 4px 6px; border-bottom: 1px solid #eef2f4; text-align: left; white-space: nowrap; }
+.layer-table select, .layer-table input { padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; font: inherit; width: 100%; }
+.layer-table input.num { width: 76px; }
+.layer-table input.conf { width: 64px; }
+.layer-table .rm { color: var(--danger); cursor: pointer; border: none; background: none; }
+.hint { color: var(--ink-2); font-size: 11.5px; margin: 6px 0 0; }
+
+.marker-link-row {
+  display: flex; align-items: center; gap: 10px; padding: 6px 0;
+  border-bottom: 1px dashed #eef2f4;
+}
+.marker-link-row .hn { width: 70px; font-weight: 600; }
+.marker-link-row select { flex: 1; padding: 5px 7px; border: 1px solid var(--line); border-radius: 5px; font: inherit; }
+
+.tie-item { border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; margin-bottom: 8px; font-size: 12.5px; }
+.tie-item .th { display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 4px; }
+.tie-item .pairs { display: flex; flex-wrap: wrap; gap: 4px; }
+.tie-pill { background: #eef4f6; border-radius: 4px; padding: 1px 7px; }
+.tie-pill.anchor { background: #fbe7d3; }
+.tie-item .un { color: var(--ink-2); margin-top: 4px; }
+
+.toast {
+  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+  background: #26323b; color: #fff; padding: 9px 18px; border-radius: 6px;
+  z-index: 100; font-size: 13px; box-shadow: 0 6px 20px rgba(0,0,0,.3);
+}
+.toast.err { background: var(--danger); }
+.toast.ok { background: var(--ok); }
+
+/* SVG 元素样式 */
+.bore-column { fill: #fbfcfd; stroke: #9fb2bd; stroke-width: 1; }
+.collar-line { stroke: #8aa1ad; stroke-width: 1.2; }
+.collar-label { font-size: 11.5px; fill: var(--ink); font-weight: 600; text-anchor: middle; }
+.elev-label { font-size: 10px; fill: #8fa0ab; }
+.layer-block { stroke: rgba(255,255,255,.85); stroke-width: 1; cursor: default; }
+.layer-label { font-size: 9.5px; fill: #2c363d; pointer-events: none; }
+.corr-line { fill: none; stroke: var(--primary); stroke-width: 1.6; opacity: .85; }
+.corr-line.anchor { stroke: var(--accent); stroke-width: 2.4; }
+.corr-line.ambiguous { stroke: var(--amb); stroke-dasharray: 5 3; stroke-width: 1.8; }
+.corr-label { font-size: 9px; fill: var(--primary-d); }
+.amb-band { fill: var(--amb); opacity: .08; }
+.amb-band-edge { stroke: var(--amb); stroke-width: 1; stroke-dasharray: 3 3; opacity: .6; }
+.unmatched-mark { stroke: var(--danger); stroke-width: 1.6; fill: none; }
+.grid-line { stroke: #e7edf0; stroke-width: 1; }
